@@ -22,7 +22,7 @@
 //!
 //!
 //! ```
-//! use slh_dsa::*;
+//! use slh_dsa_hw::*;
 //! use signature::*;
 //!
 //! let mut rng = rand::rng();

@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use signature::{Keypair, Signer, Verifier};
-use slh_dsa::*;
+use slh_dsa_hw::*;
 use std::hint::black_box;
 
 pub fn sign_benchmark<P: ParameterSet>(c: &mut Criterion) {

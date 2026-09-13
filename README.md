@@ -1,14 +1,15 @@
-# Offline SLH-DSA Signing Device
+# PQC Development HSM (Development Phase)
 
-An Arduino Nano ESP32 that reads `message.txt` from a microSD card, signs it with a post-quantum SLH-DSA key held on the device, and writes `message.txt.sig` back to the card.
+A PKCS#11 token supporting post-quantum signatures, for developing and testing integration code before deploying against a production HSM. No freely available PKCS#11 implementation offers SLH-DSA today, which makes that difficult for anyone building PQC support. Run it as a Docker container for local development and CI, or flash it to an Arduino Nano ESP32 where the private key stays on the device.
 
 ---
 
 ## Dependencies
 
+- This repository is forked from [`slh-dsa-signer`](https://github.com/mourningdove007/slh-dsa-signer), which is where `nano-signer/`, `slh-dsa-hw/`, and `cli/` originated and were benchmarked.
 - `cli/` signs and verifies using RustCrypto's [`slh-dsa`](https://github.com/RustCrypto/signatures/tree/master/slh-dsa) crate (`0.1.0`, unmodified, from crates.io).
-- `nano-signer/` signs using `slh-dsa-hw` (`../slh-dsa-hw`), a local fork of RustCrypto's `slh-dsa` (`0.2.0-rc.5`) that adds an ESP32-S3 hardware SHA backend; see `slh-dsa-hw/README.md` and `NANO_DOCUMENTATION.md` for what changed and why.
-- Software hashing (`slh-dsa-hw`'s software path, and the `'1'`/`'2'`/`'3'` benchmark's software side) uses RustCrypto's [`sha2`](https://crates.io/crates/sha2) and [`hmac`](https://crates.io/crates/hmac) crates.
+- `nano-signer/` signs using `slh-dsa-hw` (`../slh-dsa-hw`), a local fork of RustCrypto's `slh-dsa` (`0.2.0-rc.5`) that adds an ESP32-S3 hardware SHA backend; see `slh-dsa-hw/README.md` for what changed and why.
+- Software hashing (`slh-dsa-hw`'s software path) uses RustCrypto's [`sha2`](https://crates.io/crates/sha2) and [`hmac`](https://crates.io/crates/hmac) crates.
 
 ---
 
@@ -24,29 +25,28 @@ An Arduino Nano ESP32 that reads `message.txt` from a microSD card, signs it wit
 | Build profile | `release` (`opt-level = "s"`, `lto = "fat"`, `codegen-units = 1`; overflow checks and debug assertions off) |
 | Hashing | Hardware rows: ESP32-S3 SHA hardware accelerator via the `slh-dsa-hw` fork's `hw-sha` feature (on by default, all six parameter sets). Software rows: RustCrypto `sha2` only, no hardware |
 
-## Benchmark Results: Hardware vs Software
+## SLH-DSA Benchmarks: Hardware vs Software
 
-| Param | Backend | Unit | Min | Max | Median | Average |
-|---|---|---|---|---|---|---|
-| 128f | software | ms | 2989 | 3048 | 2993 | 2997 |
-| 128f | hardware | ms | 1010 | 1028 | 1011 | 1012 |
-| 128s | software | ms | 62263 | 62322 | 62267 | 62272 |
-| 128s | hardware | ms | 21061 | 21079 | 21062 | 21063 |
-| 192f | software | ms | 76807 | 83095 | 76887 | 77573 |
-| 192f | hardware | ms | 1708 | 1726 | 1709 | 1710 |
+| Param | Backend | Unit | Min | Max | Average |
+|---|---|---|---|---|---|
+| 128f | software | ms | 2989 | 3048 | 2997 |
+| 128f | hardware | ms | 1010 | 1028 | 1012 |
+| 128s | software | ms | 62263 | 62322 | 62272 |
+| 128s | hardware | ms | 21061 | 21079 | 21063 |
+| 192f | software | ms | 76807 | 83095 | 77573 |
+| 192f | hardware | ms | 1708 | 1726 | 1710 |
 
 ## Raw hashing: hardware vs software
 
-| Algorithm | Backend | Unit | Min | Max | Median | Average | Throughput (bytes/sec) |
-|---|---|---|---|---|---|---|---|
-| SHA-256 | software | us | 47 | 94 | 70 | 69 | 2,130,118 |
-| SHA-256 | hardware | us | 8 | 35 | 10 | 10 | 13,251,661 |
-| <span style="color:red">SHA-512</span> | <span style="color:red">software</span> | <span style="color:red">us</span> | <span style="color:red">6061</span> | <span style="color:red">12036</span> | <span style="color:red">12035</span> | <span style="color:red">11317</span> | <span style="color:red">13,151</span> |
-| SHA-512 | hardware | us | 9 | 35 | 12 | 11 | 11,889,410 |
-| <span style="color:red">HMAC-SHA-512</span> | <span style="color:red">software</span> | <span style="color:red">us</span> | <span style="color:red">23998</span> | <span style="color:red">29962</span> | <span style="color:red">29957</span> | <span style="color:red">29242</span> | <span style="color:red">5,105</span> |
-| HMAC-SHA-512 | hardware | us | 26 | 50 | 29 | 29 | 4,983,836 |
+| Algorithm | Backend | Unit | Min | Max | Average |
+|---|---|---|---|---|---|
+| SHA-256 | software | µs | 47 | 94 | 69 |
+| SHA-256 | hardware | µs | 8 | 35 | 10 |
+| <span style="color:red">SHA-512</span> | <span style="color:red">software</span> | <span style="color:red">µs</span> | <span style="color:red">6061</span> | <span style="color:red">12036</span> | <span style="color:red">11317</span> |
+| SHA-512 | hardware | µs | 9 | 35 | 11 |
 
-See `BENCHMARKING.md` for what these measure and how they were produced. <span style="color:red">We plan to investigate why the software SHA-512 takes so long on the Nano device.</span>
+
+See [BENCHMARKING.md](https://github.com/mourningdove007/slh-dsa-signer/blob/main/BENCHMARKING.md) for what these measure and how they were produced. <span style="color:red">We plan to investigate why the software SHA-512 takes so long on the Nano device.</span>
 
 ---
 
@@ -115,8 +115,8 @@ espflash flash --monitor target/xtensa-esp32s3-none-elf/release/nano-signer
 
 Confirm with `?` before running `s`/`k`; it prints `profile=release` (and the current LED states) so you know the build actually flashed correctly before trusting anything else it does.
 
-Press **`s`** to sign the hardcoded test message. Blue LED on while signing; on success, blue off and the public key plus full signature print to the serial log (not truncated, which lets you capture and cross-verify it against the desktop `cli`; see `NANO_DOCUMENTATION.md`), then green for about half a second. On failure, blue off, `signing failed`, then red for about half a second.
+Press **`s`** to sign the hardcoded test message. Blue LED on while signing; on success, blue off and the public key plus full signature print to the serial log, then green for about half a second. On failure, blue off, `signing failed`, then red for about half a second.
 
 ### Generate a keypair on-device
 
-Press **`k`** to generate a fresh keypair using the ESP32-S3's hardware TRNG; `sec.key` and `pub.key` print to the serial log in full. Keys aren't persisted anywhere yet, no flash storage or SD card wired up, so this will be revisited once that exists.
+Press **`k`** to generate a fresh keypair using the ESP32-S3's hardware TRNG; `sec.key` and `pub.key` print to the serial log in full. Keys aren't persisted anywhere yet; on-device flash storage is `TODO.md`'s Phase 2.

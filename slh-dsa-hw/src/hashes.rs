@@ -8,7 +8,7 @@ use core::fmt::Debug;
 use hybrid_array::{Array, ArraySize};
 
 #[cfg(feature = "hw-sha")]
-pub use hw::{hw_hmac512, hw_sha256, hw_sha512, init_hw_sha};
+pub use hw::init_hw_sha;
 pub use sha2::*;
 pub use shake::*;
 
