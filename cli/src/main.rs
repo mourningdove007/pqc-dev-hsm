@@ -7,7 +7,6 @@ fn print_usage(program: &str) {
     eprintln!("  {program} keygen <secret-key-path> [--param 128s|128f|192s|192f|256s|256f] [--pub-key <public-key-path>]");
     eprintln!("  {program} sign <secret-key-path> <message> <signature-path> [--param 128s|128f|192s|192f|256s|256f]");
     eprintln!("  {program} verify <public-key-path> <message> <signature-path> [--param 128s|128f|192s|192f|256s|256f]");
-    eprintln!("  {program} gen-corpus <output-path>");
     eprintln!("  (--param defaults to 128s for keygen, 128f for sign/verify, matching this project's original desktop workflow)");
 }
 
@@ -192,25 +191,6 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("error: failed to verify signature: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        "gen-corpus" => {
-            let Some(output_path) = args.next() else {
-                print_usage(&program);
-                return ExitCode::FAILURE;
-            };
-
-            match cli::generate_corpus(&PathBuf::from(&output_path)) {
-                Ok((record_count, byte_count)) => {
-                    println!(
-                        "wrote {record_count} messages ({byte_count} bytes) to {output_path}"
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: failed to generate corpus: {e}");
                     ExitCode::FAILURE
                 }
             }

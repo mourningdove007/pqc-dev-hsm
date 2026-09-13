@@ -1,9 +1,10 @@
-# Local fork of RustCrypto's `slh-dsa`; see README.md.
+# Local fork of RustCrypto's `slh-dsa`, renamed to `slh-dsa-hw` so it no longer
+# shadows the upstream crate name; see README.md.
 
 [package]
 edition = "2024"
 rust-version = "1.85"
-name = "slh-dsa"
+name = "slh-dsa-hw"
 version = "0.2.0-rc.5"
 build = false
 exclude = ["tests"]
@@ -41,7 +42,7 @@ zeroize = [
 hw-sha = ["dep:esp-hal", "dep:critical-section", "dep:nb"]
 
 [lib]
-name = "slh_dsa"
+name = "slh_dsa_hw"
 path = "src/lib.rs"
 bench = false
 

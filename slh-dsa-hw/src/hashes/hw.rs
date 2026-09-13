@@ -15,8 +15,8 @@ fn with_hw_sha<R>(f: impl FnOnce(&mut Sha<'static>) -> R) -> R {
     critical_section::with(|cs| {
         let mut slot = HW_SHA.borrow_ref_mut(cs);
         let sha = slot.as_mut().expect(
-            "slh_dsa hw-sha: hardware SHA peripheral not initialized -- call \
-             slh_dsa::init_hw_sha() once at boot before signing or verifying",
+            "slh_dsa_hw hw-sha: hardware SHA peripheral not initialized -- call \
+             slh_dsa_hw::init_hw_sha() once at boot before signing or verifying",
         );
         f(sha)
     })
@@ -33,10 +33,6 @@ fn hw_update_all<A: esp_hal::sha::ShaAlgorithm>(
 }
 
 
-pub fn hw_sha256(data: &[u8]) -> [u8; 32] {
-    hw_hash256(core::iter::once(data))
-}
-
 pub(crate) fn hw_hash256<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 32] {
     let mut out = [0u8; 32];
     with_hw_sha(|sha| {
@@ -47,10 +43,6 @@ pub(crate) fn hw_hash256<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 
         nb::block!(hasher.finish(&mut out)).unwrap();
     });
     out
-}
-
-pub fn hw_sha512(data: &[u8]) -> [u8; 64] {
-    hw_hash512(core::iter::once(data))
 }
 
 pub(crate) fn hw_hash512<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 64] {
@@ -104,10 +96,6 @@ pub(crate) fn hw_hmac_sha512<'a>(key: &[u8], parts: impl IntoIterator<Item = &'a
         nb::block!(hasher.finish(&mut inner_out)).unwrap();
     });
     hw_hash512([opad.as_slice(), inner_out.as_slice()])
-}
-
-pub fn hw_hmac512(key: &[u8], data: &[u8]) -> [u8; 64] {
-    hw_hmac_sha512(key, core::iter::once(data))
 }
 
 #[derive(Clone, Debug)]

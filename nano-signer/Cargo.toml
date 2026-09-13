@@ -16,15 +16,9 @@ esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"] }
 
 critical-section = "1.2.0"
 # Forked locally from slh-dsa 0.2.0-rc.5 to add a hardware-SHA HashSuite
-# backend for the ESP32-S3; see NANO_DOCUMENTATION.md. Package name is kept
-# as "slh-dsa" so no other source in this crate needs to change.
-slh-dsa = { path = "../slh-dsa-hw", default-features = false, features = ["hw-sha"] }
-# Software side of the '1'/'2'/'3' hashing benchmark commands. Pinned to the
-# same versions the forked slh-dsa crate depends on, so both unify to one
-# copy instead of building two separate ones (see NANO_DOCUMENTATION.md
-# "Issues encountered" for what happens when this isn't done).
-sha2 = { version = "0.11", default-features = false }
-hmac = "0.13"
+# backend for the ESP32-S3; Renamed to "slh-dsa-hw" 
+# so it no longer shadows the upstream "slh-dsa" crate name.
+slh-dsa-hw = { path = "../slh-dsa-hw", default-features = false, features = ["hw-sha"] }
 
 
 [features]

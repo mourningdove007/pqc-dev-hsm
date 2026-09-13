@@ -970,9 +970,7 @@ dependencies = [
  "critical-section",
  "esp-bootloader-esp-idf",
  "esp-hal",
- "hmac",
- "sha2",
- "slh-dsa",
+ "slh-dsa-hw",
 ]
 
 [[package]]
@@ -1241,7 +1239,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "slh-dsa"
+name = "slh-dsa-hw"
 version = "0.2.0-rc.5"
 dependencies = [
  "const-oid",
