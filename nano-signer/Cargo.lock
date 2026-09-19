@@ -970,7 +970,9 @@ dependencies = [
  "critical-section",
  "esp-bootloader-esp-idf",
  "esp-hal",
+ "nb 1.1.0",
  "slh-dsa-hw",
+ "token-core",
 ]
 
 [[package]]
@@ -1365,6 +1367,10 @@ dependencies = [
  "quote",
  "syn 3.0.4",
 ]
+
+[[package]]
+name = "token-core"
+version = "0.1.0"
 
 [[package]]
 name = "toml_datetime"

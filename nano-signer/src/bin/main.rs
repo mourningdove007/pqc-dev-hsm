@@ -7,7 +7,7 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use core::fmt::Write as _;
+use core::convert::Infallible;
 
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, Output, OutputConfig};
@@ -16,14 +16,15 @@ use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::sha::Sha;
 use esp_hal::time::{Duration, Instant};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
+use esp_hal::Blocking;
 use slh_dsa_hw::signature::Signer;
 use slh_dsa_hw::SigningKey;
+use token_core::{Command, SigningBackend, Status};
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
-
 
 #[cfg(feature = "param-128s")]
 type SelectedParams = slh_dsa_hw::Sha2_128s;
@@ -61,15 +62,126 @@ const PARAM_SET_NAME: &str = "256s";
 #[cfg(feature = "param-256f")]
 const PARAM_SET_NAME: &str = "256f";
 
+
+#[cfg(feature = "param-128s")]
+const PUBLIC_KEY_LEN: usize = 32;
+#[cfg(feature = "param-128f")]
+const PUBLIC_KEY_LEN: usize = 32;
+#[cfg(feature = "param-192s")]
+const PUBLIC_KEY_LEN: usize = 48;
+#[cfg(feature = "param-192f")]
+const PUBLIC_KEY_LEN: usize = 48;
+#[cfg(feature = "param-256s")]
+const PUBLIC_KEY_LEN: usize = 64;
+#[cfg(feature = "param-256f")]
+const PUBLIC_KEY_LEN: usize = 64;
+
+#[cfg(feature = "param-128s")]
+const SIGNATURE_MAX_LEN: usize = 7856;
+#[cfg(feature = "param-128f")]
+const SIGNATURE_MAX_LEN: usize = 17088;
+#[cfg(feature = "param-192s")]
+const SIGNATURE_MAX_LEN: usize = 16224;
+#[cfg(feature = "param-192f")]
+const SIGNATURE_MAX_LEN: usize = 35664;
+#[cfg(feature = "param-256s")]
+const SIGNATURE_MAX_LEN: usize = 29792;
+#[cfg(feature = "param-256f")]
+const SIGNATURE_MAX_LEN: usize = 49856;
+
+
+const MAX_MESSAGE_LEN: usize = 4096;
+const REQUEST_BUF_LEN: usize = 1 + 4 + MAX_MESSAGE_LEN;
+const RESPONSE_BUF_LEN: usize = SIGNATURE_MAX_LEN;
+
 static SECRET_KEY_BYTES: &[u8] = include_bytes!("../../keys/sec.key");
 static PUBLIC_KEY_BYTES: &[u8] = include_bytes!("../../keys/pub.key");
-static MESSAGE: &[u8] = b"hello from the nano-signer bring-up test";
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
+struct SerialTransport(UsbSerialJtag<'static, Blocking>);
+
+impl token_core::Read for SerialTransport {
+    type Error = Infallible;
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
+        for slot in buf.iter_mut() {
+            *slot = nb::block!(self.0.read_byte())?;
+        }
+        Ok(())
+    }
+}
+
+impl token_core::Write for SerialTransport {
+    type Error = Infallible;
+
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        self.0.write(buf)
+    }
+}
+
+struct NanoBackend {
+    signing_key: SigningKey<SelectedParams>,
+    public_key_bytes: [u8; PUBLIC_KEY_LEN],
+}
+
+impl NanoBackend {
+    fn from_embedded() -> Self {
+        let signing_key = SigningKey::<SelectedParams>::try_from(SECRET_KEY_BYTES)
+            .expect("embedded secret key must be well-formed");
+        let mut public_key_bytes = [0u8; PUBLIC_KEY_LEN];
+        public_key_bytes.copy_from_slice(PUBLIC_KEY_BYTES);
+        Self {
+            signing_key,
+            public_key_bytes,
+        }
+    }
+}
+
+impl SigningBackend for NanoBackend {
+    fn param_set_name(&self) -> &str {
+        PARAM_SET_NAME
+    }
+
+    fn public_key(&self) -> &[u8] {
+        &self.public_key_bytes
+    }
+
+    fn sign(&self, message: &[u8], out: &mut [u8]) -> Result<usize, ()> {
+        let signature = self.signing_key.try_sign(message).map_err(|_| ())?;
+        let sig_bytes = signature.to_bytes();
+        if out.len() < sig_bytes.len() {
+            return Err(());
+        }
+        out[..sig_bytes.len()].copy_from_slice(&sig_bytes);
+        Ok(sig_bytes.len())
+    }
+
+    fn generate_keypair(&mut self) -> bool {
+        let Ok(mut trng) = Trng::try_new() else {
+            return false;
+        };
+        let new_key = SigningKey::<SelectedParams>::new(&mut trng);
+        self.public_key_bytes
+            .copy_from_slice(&new_key.as_ref().to_bytes());
+        self.signing_key = new_key;
+        true
+    }
+}
+
+const SUCCESS_HOLD: Duration = Duration::from_millis(3000);
+
+fn flash_success(led: &mut Output<'_>) {
+    led.set_low();
+    let hold_until = Instant::now() + SUCCESS_HOLD;
+    while Instant::now() < hold_until {}
+    led.set_high();
+}
+
 #[allow(
     clippy::large_stack_frames,
-    reason = "it's not unusual to allocate larger buffers etc. in main"
+    reason = "request_buf and response_buf are sized for this build's parameter set and \
+    live for the lifetime of main; not unusual on a 512 KB-RAM chip."
 )]
 #[main]
 fn main() -> ! {
@@ -86,125 +198,45 @@ fn main() -> ! {
     let mut red = Output::new(peripherals.GPIO46, Level::High, OutputConfig::default());
     let mut green = Output::new(peripherals.GPIO0, Level::High, OutputConfig::default());
     let mut blue = Output::new(peripherals.GPIO45, Level::High, OutputConfig::default());
-    let mut orange = Output::new(peripherals.GPIO48, Level::High, OutputConfig::default());
 
-    let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
+    let mut transport = SerialTransport(UsbSerialJtag::new(peripherals.USB_DEVICE));
 
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
 
     slh_dsa_hw::init_hw_sha(Sha::new(peripherals.SHA));
 
+    let mut backend = NanoBackend::from_embedded();
+
+    let mut request_buf = [0u8; REQUEST_BUF_LEN];
+    let mut response_buf = [0u8; RESPONSE_BUF_LEN];
+
     loop {
-        let Ok(byte) = usb_serial.read_byte() else {
-            continue;
-        };
+        let (command_byte, payload) =
+            match token_core::read_frame(&mut transport, &mut request_buf) {
+                Ok(frame) => frame,
+                Err(_) => continue,
+            };
 
-        match byte {
-            b'r' => red.toggle(),
-            b'g' => green.toggle(),
-            b'b' => blue.toggle(),
-            b'o' => orange.toggle(),
-            b's' => {
-                blue.set_low();
+        let visual_feedback = command_byte == Command::Sign as u8
+            || command_byte == Command::GenerateKeypair as u8;
 
-                let signing_key = SigningKey::<SelectedParams>::try_from(SECRET_KEY_BYTES)
-                    .expect("embedded secret key must be well-formed");
-
-                match signing_key.try_sign(MESSAGE) {
-                    Ok(signature) => {
-                        blue.set_high();
-
-                        let sig_bytes = signature.to_bytes();
-                        let _ = write!(
-                            usb_serial,
-                            "signed {} bytes with public key ({PARAM_SET_NAME}) ",
-                            MESSAGE.len(),
-                        );
-                        for b in PUBLIC_KEY_BYTES.iter() {
-                            let _ = write!(usb_serial, "{b:02x}");
-                        }
-                        let _ = write!(usb_serial, "\r\nsignature ({} bytes): ", sig_bytes.len());
-                        for b in sig_bytes.iter() {
-                            let _ = write!(usb_serial, "{b:02x}");
-                        }
-                        let _ = write!(usb_serial, "\r\n");
-                        let _ = usb_serial.flush_tx();
-
-                        green.set_low();
-                        let hold_until = Instant::now() + Duration::from_millis(500);
-                        while Instant::now() < hold_until {}
-                        green.set_high();
-                    }
-                    Err(_) => {
-                        blue.set_high();
-                        let _ = write!(usb_serial, "signing failed\r\n");
-                        let _ = usb_serial.flush_tx();
-
-                        red.set_low();
-                        let hold_until = Instant::now() + Duration::from_millis(500);
-                        while Instant::now() < hold_until {}
-                        red.set_high();
-                    }
-                }
-            }
-            b'k' => {
-                red.set_low();
-                blue.set_low();
-
-                let Ok(mut trng) = Trng::try_new() else {
-                    red.set_high();
-                    blue.set_high();
-                    let _ = write!(usb_serial, "TRNG unavailable\r\n");
-                    let _ = usb_serial.flush_tx();
-                    continue;
-                };
-
-                let signing_key = SigningKey::<SelectedParams>::new(&mut trng);
-                let sec_bytes = signing_key.to_bytes();
-                let pub_bytes = signing_key.as_ref().to_bytes();
-
-                red.set_high();
-                blue.set_high();
-
-                let _ = write!(
-                    usb_serial,
-                    "generated with {PARAM_SET_NAME}\r\nsec.key ({} bytes): ",
-                    sec_bytes.len()
-                );
-                for b in sec_bytes.iter() {
-                    let _ = write!(usb_serial, "{b:02x}");
-                }
-                let _ = write!(usb_serial, "\r\npub.key ({} bytes): ", pub_bytes.len());
-                for b in pub_bytes.iter() {
-                    let _ = write!(usb_serial, "{b:02x}");
-                }
-                let _ = write!(usb_serial, "\r\nnot written to storage yet\r\n");
-                let _ = usb_serial.flush_tx();
-
-                green.set_low();
-                let hold_until = Instant::now() + Duration::from_millis(500);
-                while Instant::now() < hold_until {}
-                green.set_high();
-            }
-            b'x' => {
-                red.set_high();
-                green.set_high();
-                blue.set_high();
-                orange.set_high();
-            }
-            b'?' => {
-                let profile = if cfg!(debug_assertions) { "dev" } else { "release" };
-                let _ = write!(
-                    usb_serial,
-                    "profile={profile} param={PARAM_SET_NAME} red={:?} green={:?} blue={:?} orange={:?}\r\n",
-                    red.output_level(),
-                    green.output_level(),
-                    blue.output_level(),
-                    orange.output_level(),
-                );
-                let _ = usb_serial.flush_tx();
-            }
-            _ => {}
+        if visual_feedback {
+            
+            red.set_high();
+            blue.set_low();
         }
+
+        let (status, len) =
+            token_core::dispatch(command_byte, payload, &mut backend, &mut response_buf);
+
+        if visual_feedback {
+            blue.set_high();
+            match status {
+                Status::Ok => flash_success(&mut green),
+                _ => red.set_low(),
+            }
+        }
+
+        let _ = token_core::write_frame(&mut transport, status.into(), &response_buf[..len]);
     }
 }

@@ -115,7 +115,7 @@ impl<P: ParameterSet + VerifyingKeyLen> VerifyingKey<P> {
         let ctx_len_bytes = ctx_len.to_be_bytes();
 
         let ctx_msg = [&[&[0], &ctx_len_bytes, ctx], msg];
-        self.raw_slh_verify_internal(&ctx_msg, signature) // TODO - context processing
+        self.raw_slh_verify_internal(&ctx_msg, signature) // TODO: context processing
     }
 
     /// Serialize the verifying key to a new stack-allocated array
@@ -183,7 +183,7 @@ impl<P: ParameterSet> Verifier<Signature<P>> for VerifyingKey<P> {
 
 impl<P: ParameterSet> MultipartVerifier<Signature<P>> for VerifyingKey<P> {
     fn multipart_verify(&self, msg: &[&[u8]], signature: &Signature<P>) -> Result<(), Error> {
-        self.raw_try_verify_with_context(msg, &[], signature) // TODO - context processing
+        self.raw_try_verify_with_context(msg, &[], signature) // TODO: context processing
     }
 }
 

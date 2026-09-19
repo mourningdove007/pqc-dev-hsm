@@ -69,11 +69,8 @@ pub(crate) trait HypertreeParams: XmssParams + Sized {
         mut idx_leaf: u32,
     ) -> HypertreeSig<Self> {
         let mut adrs = WotsHash::default();
-        // Currently no parameter set supports more than 2^64 trees
-        // So tree_adrs_high is always unset
         adrs.tree_adrs_low.set(idx_tree);
 
-        // Pre-allocate the array - Option should have no overhead after optimization
         let mut sig = Array::<_, Self::D>::default();
 
         sig[0] = Some(self.xmss_sign(m, sk_seed, idx_leaf, &adrs));
@@ -196,10 +193,8 @@ mod tests {
 
         let sig = htmode.ht_sign(&m, &sk_seed, idx_tree, idx_leaf);
 
-        // Tweak the message to ensure verification fails
         m[0] ^= 0xff; // Invert the first byte of the message
 
-        // Verification should fail since the message was tweaked
         assert!(!htmode.ht_verify(&m, &sig, idx_tree, idx_leaf, &pk_root));
     }
 

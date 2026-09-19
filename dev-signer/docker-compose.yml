@@ -1,0 +1,9 @@
+services:
+  dev-signer:
+    build:
+      context: ..
+      dockerfile: dev-signer/Dockerfile
+    ports:
+      - "7878:7878"
+    environment:
+      PARAM_SET: "192f"

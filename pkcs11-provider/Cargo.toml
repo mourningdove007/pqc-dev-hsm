@@ -1,0 +1,23 @@
+[package]
+name = "pkcs11-provider"
+version = "0.1.0"
+edition = "2024"
+description = """
+PKCS#11 provider (cdylib) for the PQC Dev HSM: implements minimum
+coherent set of PKCS#11 functions, talking to either dev-signer (TCP) or
+nano-signer (serial) over token-core's wire protocol.
+"""
+
+[lib]
+name = "pkcs11_provider"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cryptoki-sys = "0.5"
+token-core = { path = "../token-core", features = ["std"] }
+serialport = { version = "4", default-features = false }
+
+[dev-dependencies]
+cryptoki = "0.9"
+slh-dsa = "0.1.0"
+signature = "=2.3.0-pre.4"

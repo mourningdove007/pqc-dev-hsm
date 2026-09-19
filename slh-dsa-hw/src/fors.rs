@@ -49,7 +49,6 @@ impl<P: ForsParams> Default for ForsMTSig<P> {
 }
 
 impl<P: ForsParams> TryFrom<&[u8]> for ForsMTSig<P> {
-    // TODO - real error type
     type Error = ();
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
         if slice.len() != ForsMTSig::<P>::SIZE {
@@ -79,7 +78,6 @@ impl<P: ForsParams> PartialEq for ForsSignature<P> {
 impl<P: ForsParams> Eq for ForsSignature<P> {}
 
 impl<P: ForsParams> TryFrom<&[u8]> for ForsSignature<P> {
-    // TODO - real error type
     type Error = ();
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
         if slice.len() != Self::SIZE {

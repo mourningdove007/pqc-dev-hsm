@@ -18,7 +18,7 @@ pub(crate) fn base_2b<OutLen: ArraySize, B: Unsigned>(x: &[u8]) -> Array<u16, Ou
         }
         bits -= B::USIZE;
         let out = (total >> bits) & ((1 << B::U8) - 1);
-        total &= (1 << bits) - 1; // Deviation from spec pseudocode - clear used component to prevent usize overflow
+        total &= (1 << bits) - 1; // Deviation from spec pseudocode: clear used component to prevent usize overflow
         out.try_into().expect("B is less than 16")
     })
 }
@@ -114,7 +114,7 @@ mod tests {
 
     proptest! {
         // These are all the OutLen, B combinations used in the FIPS spec
-        // TODO - explicitly tie to individual parameter sets
+        // TODO: explicitly tie to individual parameter sets
 
         #[test]
         fn test_base_2b_32_4(x in prop::collection::vec(any::<u8>(), 0..100)){
