@@ -1,0 +1,11 @@
+[package]
+name = "token-core"
+version = "0.1.0"
+edition = "2024"
+description = """
+Shared wire protocol and command-dispatch logic for the PQC Dev HSM.
+"""
+
+[features]
+default = []
+std = []
