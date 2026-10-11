@@ -1,6 +1,7 @@
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use cryptoki::context::{CInitializeArgs, Pkcs11};
@@ -11,6 +12,9 @@ use signature::Verifier;
 use slh_dsa::{Sha2_192f, Signature, VerifyingKey};
 
 const TEST_PORT: u16 = 17879;
+const GENERATE_TEST_PORT: u16 = 17880;
+
+static SERIALIZE_PROVIDER_TESTS: Mutex<()> = Mutex::new(());
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -25,7 +29,7 @@ impl Drop for DevSigner {
     }
 }
 
-fn spawn_dev_signer() -> DevSigner {
+fn spawn_dev_signer(port: u16) -> DevSigner {
     let repo_root = manifest_dir().join("..");
     let dev_signer_manifest = repo_root.join("dev-signer/Cargo.toml");
     let sec_key = repo_root.join("dev-signer/keys/sec.key");
@@ -36,7 +40,7 @@ fn spawn_dev_signer() -> DevSigner {
         .arg("--quiet")
         .arg("--manifest-path")
         .arg(&dev_signer_manifest)
-        .env("PORT", TEST_PORT.to_string())
+        .env("PORT", port.to_string())
         .env("SEC_KEY_PATH", &sec_key)
         .env("PUB_KEY_PATH", &pub_key)
         .stdout(Stdio::piped())
@@ -44,7 +48,7 @@ fn spawn_dev_signer() -> DevSigner {
         .spawn()
         .expect("failed to spawn dev-signer");
 
-    wait_for_port(TEST_PORT);
+    wait_for_port(port);
     DevSigner(child)
 }
 
@@ -86,8 +90,9 @@ fn provider_path() -> PathBuf {
 
 #[test]
 fn sign_a_message_over_pkcs11_against_dev_signer() {
-    let _dev_signer = spawn_dev_signer();
-    
+    let _guard = SERIALIZE_PROVIDER_TESTS.lock().unwrap();
+    let _dev_signer = spawn_dev_signer(TEST_PORT);
+
     unsafe {
         std::env::set_var("PQC_HSM_ENDPOINT", format!("tcp://127.0.0.1:{TEST_PORT}"));
     }
@@ -149,4 +154,66 @@ fn sign_a_message_over_pkcs11_against_dev_signer() {
     verifying_key
         .verify(message, &signature)
         .expect("signature produced over PKCS#11 failed independent verification");
+}
+
+/// Exercises `C_GenerateKeyPair`: a real HSM lets a client provision a new
+/// key on demand rather than only ever signing with whatever key existed at
+/// boot. Confirms the on-demand key actually replaces the old one (not just
+/// that the call returns `CKR_OK`) and that the new key signs correctly.
+#[test]
+fn generate_key_pair_replaces_the_key_over_pkcs11() {
+    let _guard = SERIALIZE_PROVIDER_TESTS.lock().unwrap();
+    let _dev_signer = spawn_dev_signer(GENERATE_TEST_PORT);
+
+    unsafe {
+        std::env::set_var(
+            "PQC_HSM_ENDPOINT",
+            format!("tcp://127.0.0.1:{GENERATE_TEST_PORT}"),
+        );
+    }
+
+    let pkcs11 = Pkcs11::new(provider_path()).expect("failed to load pkcs11-provider");
+    pkcs11
+        .initialize(CInitializeArgs::OsThreads)
+        .expect("C_Initialize failed");
+
+    let slot = pkcs11.get_slots_with_token().expect("C_GetSlotList failed")[0];
+    let session = pkcs11.open_rw_session(slot).expect("C_OpenSession failed");
+
+    let original_public_key = std::fs::read(manifest_dir().join("../dev-signer/keys/pub.key"))
+        .expect("failed to read dev-signer's checked-in public key");
+
+    let mechanism_type =
+        MechanismType::new_vendor_defined(pkcs11_provider::CKM_SLH_DSA_SHA2_VENDOR)
+            .expect("mechanism type construction failed");
+    let mechanism =
+        Mechanism::VendorDefined(VendorDefinedMechanism::new::<()>(mechanism_type, None));
+
+    let (public_key, private_key) = session
+        .generate_key_pair(&mechanism, &[], &[])
+        .expect("C_GenerateKeyPair failed");
+
+    let attrs = session
+        .get_attributes(public_key, &[AttributeType::Value])
+        .expect("C_GetAttributeValue failed");
+    let Attribute::Value(new_public_key_bytes) = &attrs[0] else {
+        panic!("expected a CKA_VALUE attribute back");
+    };
+    assert_ne!(
+        new_public_key_bytes, &original_public_key,
+        "C_GenerateKeyPair should replace the key, not keep the checked-in demo key"
+    );
+
+    let message = b"signed with a key generated on demand over PKCS#11";
+    let signature_bytes = session
+        .sign(&mechanism, private_key, message)
+        .expect("C_Sign with the newly generated key failed");
+
+    let verifying_key = VerifyingKey::<Sha2_192f>::try_from(new_public_key_bytes.as_slice())
+        .expect("invalid public key encoding");
+    let signature = Signature::<Sha2_192f>::try_from(signature_bytes.as_slice())
+        .expect("invalid signature encoding");
+    verifying_key
+        .verify(message, &signature)
+        .expect("signature from the newly generated key failed independent verification");
 }

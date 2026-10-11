@@ -9,6 +9,7 @@
 
 use core::convert::Infallible;
 
+use embedded_storage::{ReadStorage, Storage};
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::main;
@@ -94,8 +95,16 @@ const MAX_MESSAGE_LEN: usize = 4096;
 const REQUEST_BUF_LEN: usize = 1 + 4 + MAX_MESSAGE_LEN;
 const RESPONSE_BUF_LEN: usize = SIGNATURE_MAX_LEN;
 
-static SECRET_KEY_BYTES: &[u8] = include_bytes!("../../keys/sec.key");
-static PUBLIC_KEY_BYTES: &[u8] = include_bytes!("../../keys/pub.key");
+/// Persisted-record layout in the `keys` flash partition (see
+/// `partitions.csv`): 1-byte magic, 2-byte little-endian secret-key length,
+/// 2-byte little-endian public-key length, then the secret key bytes
+/// immediately followed by the public key bytes. `KEY_RECORD_MAGIC` can
+/// never collide with erased flash, which always reads back as `0xFF`.
+const KEY_RECORD_MAGIC: u8 = 0xA5;
+const KEY_RECORD_HEADER_LEN: usize = 5;
+/// Generously covers the largest FIPS 205 SLH-DSA-SHA2 secret+public key
+/// pair (256f: 128-byte secret key + 64-byte public key = 192 bytes).
+const MAX_KEY_RECORD_LEN: usize = 512;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -125,12 +134,76 @@ struct NanoBackend {
     public_key_bytes: [u8; PUBLIC_KEY_LEN],
 }
 
-impl NanoBackend {
-    fn from_embedded() -> Self {
-        let signing_key = SigningKey::<SelectedParams>::try_from(SECRET_KEY_BYTES)
-            .expect("embedded secret key must be well-formed");
+/// Finds the `keys` partition (see `partitions.csv`) and returns a
+/// `FlashRegion` view into it.
+fn find_keys_partition<'a, 'd>(
+    flash: &'a mut esp_storage::FlashStorage<'d>,
+    table_buf: &'a mut [u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
+) -> esp_bootloader_esp_idf::partitions::FlashRegion<'a, esp_storage::FlashStorage<'d>> {
+    let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, table_buf)
+        .expect("failed to read partition table");
+    table
+        .iter()
+        .find(|entry| entry.label_as_str() == "keys")
+        .expect("no `keys` partition defined; check partitions.csv and the --partition-table flag")
+        .as_embedded_storage(flash)
+}
+
+/// Loads a persisted keypair from the `keys` flash partition, or generates a
+/// fresh one and persists it if the partition has no valid record yet
+fn load_or_generate_keys<'a, 'd>(
+    flash: &'a mut esp_storage::FlashStorage<'d>,
+    table_buf: &'a mut [u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
+) -> (SigningKey<SelectedParams>, [u8; PUBLIC_KEY_LEN]) {
+    let mut region = find_keys_partition(flash, table_buf);
+
+    let mut record = [0u8; MAX_KEY_RECORD_LEN];
+    region
+        .read(0, &mut record)
+        .expect("failed to read keys partition");
+
+    if record[0] == KEY_RECORD_MAGIC {
+        let sec_len = u16::from_le_bytes([record[1], record[2]]) as usize;
+        let pub_len = u16::from_le_bytes([record[3], record[4]]) as usize;
+        let sec_start = KEY_RECORD_HEADER_LEN;
+        let pub_start = sec_start + sec_len;
+        let signing_key =
+            SigningKey::<SelectedParams>::try_from(&record[sec_start..sec_start + sec_len])
+                .expect("stored secret key is corrupt");
         let mut public_key_bytes = [0u8; PUBLIC_KEY_LEN];
-        public_key_bytes.copy_from_slice(PUBLIC_KEY_BYTES);
+        public_key_bytes.copy_from_slice(&record[pub_start..pub_start + pub_len]);
+        (signing_key, public_key_bytes)
+    } else {
+        let mut trng = Trng::try_new().expect("failed to init RNG for key generation");
+        let signing_key = SigningKey::<SelectedParams>::new(&mut trng);
+        let sec_bytes = signing_key.to_bytes();
+        let pub_bytes = signing_key.as_ref().to_bytes();
+
+        let mut record = [0xFFu8; MAX_KEY_RECORD_LEN];
+        record[0] = KEY_RECORD_MAGIC;
+        record[1..3].copy_from_slice(&(sec_bytes.len() as u16).to_le_bytes());
+        record[3..5].copy_from_slice(&(pub_bytes.len() as u16).to_le_bytes());
+        let sec_start = KEY_RECORD_HEADER_LEN;
+        let pub_start = sec_start + sec_bytes.len();
+        record[sec_start..pub_start].copy_from_slice(&sec_bytes);
+        record[pub_start..pub_start + pub_bytes.len()].copy_from_slice(&pub_bytes);
+        region
+            .write(0, &record)
+            .expect("failed to write keys partition");
+
+        let mut public_key_bytes = [0u8; PUBLIC_KEY_LEN];
+        public_key_bytes.copy_from_slice(&pub_bytes);
+        (signing_key, public_key_bytes)
+    }
+}
+
+impl NanoBackend {
+    /// `flash_peripheral` is `peripherals.FLASH` from `esp_hal::init()` in
+    /// `main()`; `FlashStorage::new` takes it by value.
+    fn from_flash_or_generate(flash_peripheral: esp_hal::peripherals::FLASH<'static>) -> Self {
+        let mut flash = esp_storage::FlashStorage::new(flash_peripheral);
+        let mut table_buf = [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN];
+        let (signing_key, public_key_bytes) = load_or_generate_keys(&mut flash, &mut table_buf);
         Self {
             signing_key,
             public_key_bytes,
@@ -169,7 +242,7 @@ impl SigningBackend for NanoBackend {
     }
 }
 
-const SUCCESS_HOLD: Duration = Duration::from_millis(3000);
+const SUCCESS_HOLD: Duration = Duration::from_millis(200);
 
 fn flash_success(led: &mut Output<'_>) {
     led.set_low();
@@ -205,7 +278,7 @@ fn main() -> ! {
 
     slh_dsa_hw::init_hw_sha(Sha::new(peripherals.SHA));
 
-    let mut backend = NanoBackend::from_embedded();
+    let mut backend = NanoBackend::from_flash_or_generate(peripherals.FLASH);
 
     let mut request_buf = [0u8; REQUEST_BUF_LEN];
     let mut response_buf = [0u8; RESPONSE_BUF_LEN];

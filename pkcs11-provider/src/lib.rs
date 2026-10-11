@@ -492,6 +492,46 @@ unsafe extern "C" fn c_sign(
     }
 }
 
+unsafe extern "C" fn c_generate_key_pair(
+    session: CK_SESSION_HANDLE,
+    mechanism: CK_MECHANISM_PTR,
+    _public_key_template: CK_ATTRIBUTE_PTR,
+    _public_key_attribute_count: CK_ULONG,
+    _private_key_template: CK_ATTRIBUTE_PTR,
+    _private_key_attribute_count: CK_ULONG,
+    public_key_handle: CK_OBJECT_HANDLE_PTR,
+    private_key_handle: CK_OBJECT_HANDLE_PTR,
+) -> CK_RV {
+    if mechanism.is_null() || public_key_handle.is_null() || private_key_handle.is_null() {
+        return CKR_ARGUMENTS_BAD;
+    }
+    if unsafe { (*mechanism).mechanism } != CKM_SLH_DSA_SHA2_VENDOR {
+        return CKR_MECHANISM_INVALID;
+    }
+
+    let result = with_state(|state| {
+        if !state.sessions.contains_key(&session) {
+            return Err(CKR_SESSION_HANDLE_INVALID);
+        }
+        let new_public_key = state.device.generate_keypair().map_err(|e| {
+            eprintln!("pkcs11-provider: key generation failed: {e}");
+            CKR_DEVICE_ERROR
+        })?;
+        state.public_key = new_public_key;
+        Ok(())
+    });
+
+    match result {
+        Ok(()) => {
+            unsafe {
+                *public_key_handle = PUBLIC_KEY_HANDLE;
+                *private_key_handle = PRIVATE_KEY_HANDLE;
+            }
+            CKR_OK
+        }
+        Err(rv) => rv,
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn C_GetFunctionList(function_list: *mut *mut CK_FUNCTION_LIST) -> CK_RV {
@@ -576,7 +616,7 @@ fn build_function_list() -> CK_FUNCTION_LIST {
         C_SignEncryptUpdate: None,
         C_DecryptVerifyUpdate: None,
         C_GenerateKey: None,
-        C_GenerateKeyPair: None,
+        C_GenerateKeyPair: Some(c_generate_key_pair),
         C_WrapKey: None,
         C_UnwrapKey: None,
         C_DeriveKey: None,

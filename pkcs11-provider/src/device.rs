@@ -113,4 +113,12 @@ impl DeviceConnection {
         }
         Ok(response)
     }
+
+    pub fn generate_keypair(&mut self) -> Result<Vec<u8>, String> {
+        let (status, response) = self.request(Command::GenerateKeypair, &[])?;
+        if status != token_core::Status::Ok as u8 {
+            return Err(format!("GENERATE_KEYPAIR failed with status {status}"));
+        }
+        Ok(response)
+    }
 }
