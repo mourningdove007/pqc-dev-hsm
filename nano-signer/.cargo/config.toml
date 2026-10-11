@@ -1,7 +1,5 @@
 [target.xtensa-esp32s3-none-elf]
-runner = "espflash flash --monitor --chip esp32s3"
-
-[env]
+runner = "espflash flash --monitor --chip esp32s3 --partition-table partitions.csv"
 
 [build]
 rustflags = [

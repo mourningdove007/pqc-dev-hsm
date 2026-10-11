@@ -1,8 +1,9 @@
 # PQC Development HSM (Development Phase)
 
-A PKCS#11 token for developing and testing integration code before deploying against a production HSM. Supports post-quantum signatures SLH-DSA and ML-DSA. Run it as a Docker container for local development or flash it to an Arduino Nano ESP32 where the private key stays on the device. 
+A PKCS#11 token for developing and testing integration code before deploying against a production HSM. Supports the post-quantum signature SLH-DSA (ML-DSA soon to come). Run it as a Docker container for local development or flash it to an Arduino Nano ESP32 where the private key stays on the device. 
 
----
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a quick map of the repo's parts, what each depends on, and what talks to what.
+
 
 ## Dependencies
 
@@ -12,7 +13,6 @@ A PKCS#11 token for developing and testing integration code before deploying aga
 - Software hashing (`slh-dsa-hw`'s software path) uses RustCrypto's [`sha2`](https://crates.io/crates/sha2) and [`hmac`](https://crates.io/crates/hmac) crates.
 - `pkcs11-provider/` uses [`cryptoki-sys`](https://crates.io/crates/cryptoki-sys) for the PKCS#11 C ABI type definitions, and [`serialport`](https://crates.io/crates/serialport) (with its `libudev`-dependent USB-enumeration feature turned off, since this provider only ever opens an explicitly-named port) to talk to `nano-signer`.
 
----
 
 ## Hardware & build
 
@@ -49,7 +49,32 @@ A PKCS#11 token for developing and testing integration code before deploying aga
 
 See [BENCHMARKING.md](https://github.com/mourningdove007/slh-dsa-signer/blob/main/BENCHMARKING.md) for what these measure and how they were produced. <span style="color:red">We plan to investigate why the software SHA-512 takes so long on the Nano device.</span>
 
----
+
+## Communication Between Components
+
+Two possible clients load the same provider. The provider talks to one of two interchangeable token backends over `token-core`'s wire protocol, picked by `PQC_HSM_ENDPOINT`.
+
+```mermaid
+graph LR
+    tool[pkcs11-tool] --> provider[pkcs11-provider .so/.dylib]
+    cli11[pkcs11-cli] --> provider
+    provider -- "tcp://" --> dev[dev-signer]
+    provider -- "serial://" --> nano[nano-signer]
+```
+
+## Directory map
+
+| Path | What it is | Depends on / talks to |
+|---|---|---|
+| `cli/` | local keygen/sign/verify | `slh-dsa` (crates.io); standalone |
+| `token-core/` | Shared wire protocol: frames, `Command`/`Status`, `dispatch()` | no deps; used by `dev-signer`, `nano-signer`, `pkcs11-provider` |
+| `slh-dsa-hw/` | Local fork of RustCrypto `slh-dsa` adding ESP32-S3 hardware SHA | used only by `nano-signer` |
+| `dev-signer/` | Software token, plain `slh-dsa`, listens over TCP | `token-core`, `slh-dsa`; a backend `pkcs11-provider` can talk to |
+| `nano-signer/` | Firmware token for the Arduino Nano ESP32; private key never leaves the device | `token-core`, `slh-dsa-hw`; a backend `pkcs11-provider` can talk to, over serial |
+| `pkcs11-provider/` | PKCS#11 C ABI module (`cdylib`) (the actual HSM interface) | `token-core` (wire protocol), `cryptoki-sys`; bridges PKCS#11 calls to whichever backend `PQC_HSM_ENDPOINT` names |
+| `pkcs11-cli/` | Minimal standalone PKCS#11 client for the two things `pkcs11-tool` can't do (read a vendor-defined pubkey, generate a keypair with a vendor mechanism) | loads `pkcs11-provider`'s built `.so`/`.dylib` directly, same as `pkcs11-tool` does |
+
+
 
 ## Desktop CLI (`cli/`)
 
@@ -85,11 +110,10 @@ cargo run -- verify <public-key-path> <message> <signature-path> [--param 128s|1
 cargo test
 ```
 
----
 
 ## Dev Software Token
 
-`dev-signer` is a software-only token (TCP, plain `slh-dsa`). Ships with a demo `192f` keypair at `dev-signer/keys/`.
+`dev-signer` is a software-only token (TCP, plain `slh-dsa`). Ships with a demo `192f` keypair at `dev-signer/keys/`. Generates its own keypair on startup, the same way a real HSM provisions itself on first boot.
 
 ### 1. Run the Token
 
@@ -105,28 +129,25 @@ cd dev-signer
 docker compose up --build
 ```
 
-Listens on `tcp://127.0.0.1:7878` by default (`PORT` env var to change it).
+Listens on `tcp://127.0.0.1:7878` by default (`PORT` env var to change it). To start from a self-generated keypair instead of the checked-in demo one, point `SEC_KEY_PATH`/`PUB_KEY_PATH` at paths that don't exist yet:
 
-### 2. Point the Provider at It
+```bash
+SEC_KEY_PATH=keys/my-sec.key PUB_KEY_PATH=keys/my-pub.key PARAM_SET=192f cargo run
+```
+
+### 2. Point the Provider
 
 ```bash
 export PQC_HSM_ENDPOINT=tcp://127.0.0.1:7878
 ```
 
----
 
 ## Hardware Token
 
-Same flow on the Arduino Nano ESP32 (`nano-signer/`), signing with the ESP32-S3 hardware SHA accelerator; the private key never leaves the device.
+Same flow on the Arduino Nano ESP32 (`nano-signer/`), signing with the ESP32-S3 hardware SHA accelerator. The private key never leaves the device. On first boot with no key stored yet, it generates its own keypair and persists it to a dedicated flash partition, the same way `dev-signer` self-provisions its key files. No `cli keygen` step needed.
 
-### 1. Generate a Keypair for Your Chosen Parameter Set
 
-```bash
-cd cli
-cargo run -- keygen ../nano-signer/keys/sec.key --param 192f --pub-key ../nano-signer/keys/pub.key
-```
-
-### 2. Build
+### 1. Build
 
 Parameter set is a compile-time feature; exactly one must be enabled.
 
@@ -144,19 +165,18 @@ cargo build --release --no-default-features --features param-192f
 | `param-256s` | SLH-DSA-SHA2-256s |
 | `param-256f` | SLH-DSA-SHA2-256f |
 
-### 3. Flash
+### 2. Flash
 
 ```bash
-espflash flash --monitor target/xtensa-esp32s3-none-elf/release/nano-signer
+espflash flash --monitor --partition-table partitions.csv target/xtensa-esp32s3-none-elf/release/nano-signer
 ```
 
-### 4. Point the Provider at It
+### 3. Point the Provider
 
 ```bash
 export PQC_HSM_ENDPOINT=serial:/dev/cu.usbmodem1101:115200  # path varies by OS/board
 ```
 
----
 
 ## Provider
 
@@ -193,9 +213,34 @@ pkcs11-tool --module target/release/libpkcs11_provider.dylib \
 
 ### 4. Verify It
 
+Both tokens generate their own key rather than using a fixed, checked-in one (see [Dev Software Token](#dev-software-token) / [Hardware Token](#hardware-token)), so read the public key back from the token itself instead of assuming a file on disk matches whatever key is actually active.
+
+`pkcs11-tool` can't do this part: `--read-object --type pubkey` only knows how to format standard key types (`CKK_RSA`, `CKK_EC`, ...), and this provider reports its SLH-DSA key as `CKK_VENDOR_DEFINED`, so `pkcs11-tool` refuses before it even reads `CKA_VALUE`. Use `pkcs11-cli` (`pkcs11-cli/`) instead. It's a minimal standalone PKCS#11 client that just does `C_FindObjects` + `C_GetAttributeValue` without the format-specific logic:
+
 ```bash
+cd ../pkcs11-cli
+cargo build --release
+./target/release/pkcs11-cli get-pubkey \
+  --module ../pkcs11-provider/target/release/libpkcs11_provider.dylib \
+  --id 01 --output /tmp/pub.key
+
 cd ../cli
-cargo run -- verify ../dev-signer/keys/pub.key "$MESSAGE" /tmp/sig.bin --param 192f
+cargo run -- verify /tmp/pub.key "$MESSAGE" /tmp/sig.bin --param 192f
 ```
 
-Use the public key and `--param` matching whichever token you signed against: `dev-signer/keys/pub.key` + `192f` for the software token, or `nano-signer/keys/pub.key` + whatever `--param` you built `nano-signer` with for the hardware token.
+Match `--param` to whichever token you signed against: `192f` for `dev-signer`'s default (override with `PARAM_SET`), or whatever `--param`/feature you built `nano-signer` with.
+
+### 5. Generate a New Key Pair
+
+A real HSM lets a client provision a new key on demand, not just rely on whatever key existed at boot.
+
+`pkcs11-tool --keypairgen` can't drive this either: it picks its generation mechanism from `--key-type`'s lookup table (RSA, EC, ...), which has no vendor-defined entry, so it ignores `--mechanism 0x80000001` and sends the wrong one. The provider correctly rejects it with `CKR_MECHANISM_INVALID`. Use `pkcs11-cli` again, same as step 4:
+
+```bash
+cd ../pkcs11-cli
+./target/release/pkcs11-cli generate-keypair \
+  --module ../pkcs11-provider/target/release/libpkcs11_provider.dylib \
+  --output /tmp/pub.key
+```
+
+This replaces the token's one key pair and writes its public key to `/tmp/pub.key`.

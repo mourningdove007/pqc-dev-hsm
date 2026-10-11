@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 
 use rand_core::OsRng;
 use signature::{Keypair, Signer};
@@ -21,6 +22,24 @@ macro_rules! dev_backend {
                             let signing_key = SigningKey::<$ty>::try_from(sec_key)
                                 .map_err(|_| format!("invalid secret key for parameter set '{}'", $name))?;
                             Ok(DevBackend::$variant(signing_key, pub_key.to_vec()))
+                        }
+                    )+
+                    other => Err(format!(
+                        "unknown parameter set '{other}' (expected one of: 128s, 128f, 192s, 192f, 256s, 256f)"
+                    )),
+                }
+            }
+
+            fn generate(param_set_name: &str) -> Result<(Self, Vec<u8>, Vec<u8>), String> {
+                match param_set_name {
+                    $(
+                        $name => {
+                            let mut rng = OsRng;
+                            let signing_key = SigningKey::<$ty>::new(&mut rng);
+                            let sec_key_bytes = signing_key.to_bytes().as_slice().to_vec();
+                            let pub_key_bytes = signing_key.verifying_key().to_bytes().to_vec();
+                            let backend = DevBackend::$variant(signing_key, pub_key_bytes.clone());
+                            Ok((backend, sec_key_bytes, pub_key_bytes))
                         }
                     )+
                     other => Err(format!(
@@ -101,13 +120,36 @@ fn main() {
         .parse()
         .expect("PORT must be a valid u16");
 
-    let sec_key = fs::read(&sec_key_path)
-        .unwrap_or_else(|e| panic!("failed to read secret key at {sec_key_path}: {e}"));
-    let pub_key = fs::read(&pub_key_path)
-        .unwrap_or_else(|e| panic!("failed to read public key at {pub_key_path}: {e}"));
+    let mut backend = if Path::new(&sec_key_path).exists() && Path::new(&pub_key_path).exists() {
+        let sec_key = fs::read(&sec_key_path)
+            .unwrap_or_else(|e| panic!("failed to read secret key at {sec_key_path}: {e}"));
+        let pub_key = fs::read(&pub_key_path)
+            .unwrap_or_else(|e| panic!("failed to read public key at {pub_key_path}: {e}"));
 
-    let mut backend = DevBackend::from_key_files(&param_set_name, &sec_key, &pub_key)
-        .unwrap_or_else(|e| panic!("{e}"));
+        DevBackend::from_key_files(&param_set_name, &sec_key, &pub_key)
+            .unwrap_or_else(|e| panic!("{e}"))
+    } else {
+        let (backend, sec_key_bytes, pub_key_bytes) =
+            DevBackend::generate(&param_set_name).unwrap_or_else(|e| panic!("{e}"));
+
+        for path in [&sec_key_path, &pub_key_path] {
+            if let Some(parent) = Path::new(path).parent() {
+                fs::create_dir_all(parent)
+                    .unwrap_or_else(|e| panic!("failed to create directory for {path}: {e}"));
+            }
+        }
+        fs::write(&sec_key_path, &sec_key_bytes).unwrap_or_else(|e| {
+            panic!("failed to write generated secret key to {sec_key_path}: {e}")
+        });
+        fs::write(&pub_key_path, &pub_key_bytes).unwrap_or_else(|e| {
+            panic!("failed to write generated public key to {pub_key_path}: {e}")
+        });
+
+        println!(
+            "dev-signer: no key found at {sec_key_path}, generated a fresh {param_set_name} keypair"
+        );
+        backend
+    };
 
     let listener = TcpListener::bind(("0.0.0.0", port))
         .unwrap_or_else(|e| panic!("failed to bind 0.0.0.0:{port}: {e}"));

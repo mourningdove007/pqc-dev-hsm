@@ -1,0 +1,18 @@
+[package]
+name = "pkcs11-cli"
+version = "0.1.0"
+edition = "2024"
+description = """
+Standalone PKCS#11 client for reading back key material that pkcs11-tool
+(OpenSC) can't handle itself: pkcs11-tool's --read-object --type pubkey
+only knows how to format standard key types (CKK_RSA, CKK_EC, ...), and
+this project's SLH-DSA key is reported as CKK_VENDOR_DEFINED, so it
+refuses before looking at CKA_VALUE. This talks plain PKCS#11
+(C_FindObjects / C_GetAttributeValue) against whichever module is passed
+via --module; it has no dependency on pkcs11-provider and makes no change
+to the wire protocol between the provider and dev-signer/nano-signer.
+"""
+
+[dependencies]
+cryptoki = "0.9"
+pkcs11-provider = { path = "../pkcs11-provider" }
