@@ -2,8 +2,6 @@
 
 A PKCS#11 token for developing and testing integration code before deploying against a production HSM. Supports the post-quantum signature SLH-DSA (ML-DSA soon to come). Run it as a Docker container for local development or flash it to an Arduino Nano ESP32 where the private key stays on the device. 
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for a quick map of the repo's parts, what each depends on, and what talks to what.
-
 
 ## Dependencies
 
